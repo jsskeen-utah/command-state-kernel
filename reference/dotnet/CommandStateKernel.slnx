@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CommandStateKernel/CommandStateKernel.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CommandStateKernel.Tests/CommandStateKernel.Tests.csproj" />
+  </Folder>
+</Solution>

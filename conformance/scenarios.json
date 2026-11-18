@@ -1,0 +1,441 @@
+{
+  "description": "Shared Layer 1 conformance suite for the command-state kernel. Each runner supplies the fixture kernel named in SPECIFICATION.md §10 (counter, label, user email, auth token, document template, lock owner, and fixture commands) and executes the steps in order. Expectations here are the spec. Steps: execute, await, expectRun, cancel, expectCancel, expectHandlerCalls, read, expectRead, check, expectCheck, checkInverse, list, expectList, subscribe, subscribeState, flush, expectRecords, expectStates, execute, getState, expectState.",
+  "policies": {
+    "standard": { "public": "allow", "internal": "allow", "pii": "mask", "secret": "deny" },
+    "closed": { "public": "deny", "internal": "deny", "pii": "deny", "secret": "deny" }
+  },
+  "contexts": {
+    "alice": {
+      "actor": { "id": "user:alice", "kind": "human" },
+      "delegationChain": []
+    },
+    "bob": {
+      "actor": { "id": "user:bob", "kind": "human" },
+      "delegationChain": []
+    },
+    "guest": {
+      "actor": { "id": "anon" },
+      "delegationChain": []
+    },
+    "agent": {
+      "actor": { "id": "agent:cli", "kind": "automated" },
+      "delegationChain": [{ "id": "user:alice", "kind": "human" }],
+      "focusCommandPath": "/counter"
+    }
+  },
+  "scenarios": [
+    {
+      "name": "resolves a relative command reference against the focus path",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:increment", "params": { "by": 1 }, "ctx": "agent", "as": "e" },
+        { "do": "await", "as": "e" },
+        { "do": "expectRun", "as": "e", "status": "Completed", "result": 1 },
+        { "do": "flush" },
+        { "do": "expectRecords", "as": "s", "count": 1, "commandUris": ["command:/counter/increment"] }
+      ]
+    },
+    {
+      "name": "rejects malformed authority references",
+      "steps": [
+        { "do": "execute", "uri": "command://counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e" },
+        { "do": "expectRun", "as": "e", "status": "Failed", "code": "INVALID_URI" }
+      ]
+    },
+    {
+      "name": "rejects references that climb above the root",
+      "steps": [
+        { "do": "execute", "uri": "command:/../counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e" },
+        { "do": "expectRun", "as": "e", "status": "Failed", "code": "INVALID_URI" }
+      ]
+    },
+    {
+      "name": "reports an unknown command as NOT_FOUND",
+      "steps": [
+        { "do": "execute", "uri": "command:/nope/x", "params": {}, "ctx": "alice", "as": "e" },
+        { "do": "expectRun", "as": "e", "status": "Failed", "code": "NOT_FOUND" }
+      ]
+    },
+    {
+      "name": "a rule that refuses one actor reports its own reason and does not run the handler",
+      "steps": [
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "guest", "as": "e" },
+        {
+          "do": "expectRun",
+          "as": "e",
+          "status": "Failed",
+          "code": "CANNOT_EXECUTE",
+          "reason": "Anonymous callers cannot change the counter"
+        },
+        { "do": "expectHandlerCalls", "uri": "command:/counter/increment", "count": 0 }
+      ]
+    },
+    {
+      "name": "refuses an unavailable command with its reason and does not run the handler",
+      "steps": [
+        { "do": "execute", "uri": "command:/counter/not-ready", "params": {}, "ctx": "alice", "as": "e" },
+        { "do": "expectRun", "as": "e", "status": "Failed", "code": "CANNOT_EXECUTE", "reason": "Service offline" },
+        { "do": "expectHandlerCalls", "uri": "command:/counter/not-ready", "count": 0 }
+      ]
+    },
+    {
+      "name": "refuses invalid parameters with issues and does not run the handler",
+      "steps": [
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 0 }, "ctx": "alice", "as": "e" },
+        {
+          "do": "expectRun",
+          "as": "e",
+          "status": "Failed",
+          "code": "VALIDATION_FAILED",
+          "issues": [{ "field": "by", "message": "must be positive" }]
+        },
+        { "do": "expectHandlerCalls", "uri": "command:/counter/increment", "count": 0 }
+      ]
+    },
+    {
+      "name": "returns a started run and settles it later",
+      "steps": [
+        { "do": "execute", "uri": "command:/counter/slow-increment", "params": { "by": 1 }, "ctx": "alice", "as": "e" },
+        { "do": "expectRun", "as": "e", "status": "Started" },
+        { "do": "await", "as": "e" },
+        { "do": "expectRun", "as": "e", "status": "Completed", "result": 1 }
+      ]
+    },
+    {
+      "name": "a handler exception fails the run and changes nothing",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/counter/fail", "params": {}, "ctx": "alice", "as": "e" },
+        { "do": "await", "as": "e" },
+        { "do": "expectRun", "as": "e", "status": "Failed", "code": "EXECUTION_ERROR", "reason": "boom" },
+        { "do": "flush" },
+        { "do": "expectRecords", "as": "s", "count": 0 },
+        { "do": "read", "uri": "state:/counter", "ctx": "alice", "as": "r" },
+        { "do": "expectRead", "as": "r", "ok": true, "data": 0 }
+      ]
+    },
+    {
+      "name": "a reducer exception fails the run and changes nothing",
+      "steps": [
+        { "do": "execute", "uri": "command:/counter/bad-reduce", "params": {}, "ctx": "alice", "as": "e" },
+        { "do": "await", "as": "e" },
+        { "do": "expectRun", "as": "e", "status": "Failed", "code": "EXECUTION_ERROR", "reason": "reducer broke" },
+        { "do": "getState", "as": "g" },
+        { "do": "expectState", "as": "g", "path": "count", "value": 0 }
+      ]
+    },
+    {
+      "name": "state is readable synchronously while a run is in flight",
+      "steps": [
+        { "do": "execute", "uri": "command:/counter/hang", "params": {}, "ctx": "alice", "as": "e" },
+        { "do": "read", "uri": "state:/counter", "ctx": "alice", "as": "r" },
+        { "do": "expectRead", "as": "r", "ok": true, "data": 0 },
+        { "do": "cancel", "of": "e", "as": "c" },
+        { "do": "await", "as": "e" }
+      ]
+    },
+    {
+      "name": "cancelling settles the run even if the handler ignores the signal",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/counter/hang", "params": {}, "ctx": "alice", "as": "e" },
+        { "do": "cancel", "of": "e", "as": "c" },
+        { "do": "await", "as": "e" },
+        { "do": "expectRun", "as": "e", "status": "Cancelled", "code": "CANCELLED" },
+        { "do": "expectCancel", "as": "c", "requested": true },
+        { "do": "flush" },
+        { "do": "expectRecords", "as": "s", "count": 0 }
+      ]
+    },
+    {
+      "name": "a second cancel is not requested",
+      "steps": [
+        { "do": "execute", "uri": "command:/counter/hang", "params": {}, "ctx": "alice", "as": "e" },
+        { "do": "cancel", "of": "e", "as": "c1" },
+        { "do": "cancel", "of": "e", "as": "c2" },
+        { "do": "expectCancel", "as": "c1", "requested": true },
+        { "do": "expectCancel", "as": "c2", "requested": false }
+      ]
+    },
+    {
+      "name": "concurrent runs each reduce against the state current at their commit",
+      "steps": [
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "a" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 2 }, "ctx": "alice", "as": "b" },
+        { "do": "await", "as": "a" },
+        { "do": "await", "as": "b" },
+        { "do": "read", "uri": "state:/counter", "ctx": "alice", "as": "r" },
+        { "do": "expectRead", "as": "r", "ok": true, "data": 3 }
+      ]
+    },
+    {
+      "name": "only committed runs emit transition records",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "a" },
+        { "do": "await", "as": "a" },
+        { "do": "execute", "uri": "command:/counter/fail", "params": {}, "ctx": "alice", "as": "b" },
+        { "do": "await", "as": "b" },
+        { "do": "execute", "uri": "command:/counter/hang", "params": {}, "ctx": "alice", "as": "c" },
+        { "do": "cancel", "of": "c", "as": "x" },
+        { "do": "await", "as": "c" },
+        { "do": "flush" },
+        { "do": "expectRecords", "as": "s", "count": 1 }
+      ]
+    },
+    {
+      "name": "records are delivered after the commit, not during it",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "a" },
+        { "do": "await", "as": "a" },
+        { "do": "read", "uri": "state:/counter", "ctx": "alice", "as": "r" },
+        { "do": "expectRead", "as": "r", "ok": true, "data": 1 },
+        { "do": "flush" },
+        { "do": "expectRecords", "as": "s", "count": 1 }
+      ]
+    },
+    {
+      "name": "records carry the actor and the delegation chain",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "agent", "as": "a" },
+        { "do": "await", "as": "a" },
+        { "do": "flush" },
+        { "do": "expectRecords", "as": "s", "count": 1, "actors": ["agent:cli"], "firstDelegation": ["user:alice"] }
+      ]
+    },
+    {
+      "name": "records carry parameters as the caller supplied them",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/auth/set-token", "params": { "token": "abc" }, "ctx": "alice", "as": "e" },
+        { "do": "await", "as": "e" },
+        { "do": "flush" },
+        { "do": "expectRecords", "as": "s", "count": 1, "firstParams": { "token": "abc" } }
+      ]
+    },
+    {
+      "name": "the state stream emits the current value first, then each committed change",
+      "steps": [
+        { "do": "subscribeState", "as": "st" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 2 }, "ctx": "alice", "as": "a" },
+        { "do": "await", "as": "a" },
+        { "do": "flush" },
+        { "do": "expectStates", "as": "st", "counts": [0, 2] }
+      ]
+    },
+    {
+      "name": "read policy masks pii and denies secret",
+      "steps": [
+        { "do": "read", "uri": "state:/user/email", "ctx": "alice", "as": "pii" },
+        { "do": "expectRead", "as": "pii", "ok": true, "data": "[MASKED]", "redacted": true },
+        { "do": "read", "uri": "state:/auth/token", "ctx": "alice", "as": "secret" },
+        { "do": "expectRead", "as": "secret", "ok": false, "code": "DENIED" }
+      ]
+    },
+    {
+      "name": "read resolves concrete URIs against templates",
+      "steps": [
+        { "do": "read", "uri": "state:/doc/d1", "ctx": "alice", "as": "r" },
+        { "do": "expectRead", "as": "r", "ok": true, "data": { "title": "Spec" }, "redacted": false }
+      ]
+    },
+    {
+      "name": "mount listings omit denied tiers and keep masked ones",
+      "steps": [
+        { "do": "list", "kind": "mounts", "glob": "state:/**", "ctx": "alice", "as": "m" },
+        {
+          "do": "expectList",
+          "as": "m",
+          "uris": ["state:/counter", "state:/label", "state:/user/email", "state:/doc/:id", "state:/lock/owner"]
+        }
+      ]
+    },
+    {
+      "name": "a read policy that denies every tier hides every mount",
+      "setup": { "policy": "closed" },
+      "steps": [
+        { "do": "list", "kind": "mounts", "glob": "state:/**", "ctx": "alice", "as": "m" },
+        { "do": "expectList", "as": "m", "uris": [] }
+      ]
+    },
+    {
+      "name": "discovery lists the commands available to each actor",
+      "steps": [
+        { "do": "list", "kind": "commands", "glob": "command:/lock/**", "ctx": "bob", "as": "a" },
+        { "do": "expectList", "as": "a", "uris": ["command:/lock/engage"] },
+        { "do": "list", "kind": "commands", "glob": "command:/lock/**", "ctx": "bob", "includeUnavailable": true, "as": "b" },
+        { "do": "expectList", "as": "b", "uris": ["command:/lock/engage", "command:/lock/release"] },
+        { "do": "list", "kind": "commands", "glob": "command:/lock/**", "ctx": "guest", "as": "g" },
+        { "do": "expectList", "as": "g", "uris": ["command:/lock/engage"] }
+      ]
+    },
+    {
+      "name": "check reports availability and validity without running the command",
+      "steps": [
+        { "do": "check", "uri": "command:/counter/increment", "params": { "by": 0 }, "ctx": "alice", "as": "c1" },
+        {
+          "do": "expectCheck",
+          "as": "c1",
+          "available": true,
+          "valid": false,
+          "reason": "must be positive",
+          "issues": [{ "field": "by", "message": "must be positive" }]
+        },
+        { "do": "check", "uri": "command:/counter/not-ready", "params": {}, "ctx": "alice", "as": "c2" },
+        { "do": "expectCheck", "as": "c2", "available": false, "valid": false, "reason": "Service offline" },
+        { "do": "check", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "c3" },
+        { "do": "expectCheck", "as": "c3", "available": true, "valid": true },
+        { "do": "expectHandlerCalls", "uri": "command:/counter/increment", "count": 0 }
+      ]
+    },
+    {
+      "name": "check reports a rule's refusal for one actor, with that rule's reason",
+      "steps": [
+        { "do": "check", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "guest", "as": "c" },
+        {
+          "do": "expectCheck",
+          "as": "c",
+          "available": false,
+          "valid": false,
+          "reason": "Anonymous callers cannot change the counter"
+        }
+      ]
+    },
+    {
+      "name": "a command that declares an inverse carries it in the transition record",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 2 }, "ctx": "alice", "as": "a" },
+        { "do": "await", "as": "a" },
+        { "do": "flush" },
+        {
+          "do": "expectRecords",
+          "as": "s",
+          "count": 1,
+          "firstInverse": { "uri": "command:/counter/decrement", "params": { "by": 2 } }
+        }
+      ]
+    },
+    {
+      "name": "the inverse of a record is checked like any command",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 2 }, "ctx": "alice", "as": "a" },
+        { "do": "await", "as": "a" },
+        { "do": "execute", "uri": "command:/counter/decrement", "params": { "by": 2 }, "ctx": "bob", "as": "b" },
+        { "do": "await", "as": "b" },
+        { "do": "flush" },
+        { "do": "checkInverse", "from": "s", "index": 0, "ctx": "alice", "as": "k" },
+        {
+          "do": "expectCheck",
+          "as": "k",
+          "available": false,
+          "valid": false,
+          "reason": "Count is below the amount to remove"
+        }
+      ]
+    },
+    {
+      "name": "running a record's inverse restores the prior state",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 2 }, "ctx": "alice", "as": "a" },
+        { "do": "await", "as": "a" },
+        { "do": "flush" },
+        { "do": "checkInverse", "from": "s", "index": 0, "ctx": "alice", "as": "k" },
+        { "do": "expectCheck", "as": "k", "available": true, "valid": true },
+        { "do": "executeInverse", "from": "s", "index": 0, "ctx": "alice", "as": "u" },
+        { "do": "await", "as": "u" },
+        { "do": "getState", "as": "g" },
+        { "do": "expectState", "as": "g", "path": "count", "value": 0 }
+      ]
+    },
+    {
+      "name": "a rule on the inverse's own target can refuse it, with that rule's reason",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/lock/engage", "params": {}, "ctx": "alice", "as": "e" },
+        { "do": "await", "as": "e" },
+        { "do": "flush" },
+        { "do": "checkInverse", "from": "s", "index": 0, "ctx": "bob", "as": "k" },
+        {
+          "do": "expectCheck",
+          "as": "k",
+          "available": false,
+          "valid": false,
+          "reason": "Only the lock owner can release"
+        }
+      ]
+    },
+    {
+      "name": "a new subscriber receives only transitions committed after it subscribed",
+      "steps": [
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "a" },
+        { "do": "await", "as": "a" },
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "b" },
+        { "do": "await", "as": "b" },
+        { "do": "flush" },
+        { "do": "expectRecords", "as": "s", "count": 1 }
+      ]
+    },
+    {
+      "name": "label set records carry the label and the prior value as the inverse",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "execute", "uri": "command:/label/set", "params": { "label": "a" }, "ctx": "alice", "as": "e" },
+        { "do": "await", "as": "e" },
+        { "do": "flush" },
+        {
+          "do": "expectRecords",
+          "as": "s",
+          "count": 1,
+          "firstInverse": { "uri": "command:/label/set", "params": { "label": "initial" } },
+          "firstAffected": ["state:/label"]
+        }
+      ]
+    },
+    {
+      "name": "a missing mount is NOT_FOUND, and a denied mount is DENIED, under a policy that denies every tier",
+      "setup": { "policy": "closed" },
+      "steps": [
+        { "do": "read", "uri": "state:/missing", "ctx": "alice", "as": "missing" },
+        { "do": "expectRead", "as": "missing", "ok": false, "code": "NOT_FOUND" },
+        { "do": "read", "uri": "state:/counter", "ctx": "alice", "as": "denied" },
+        { "do": "expectRead", "as": "denied", "ok": false, "code": "DENIED" }
+      ]
+    },
+    {
+      "name": "ten concurrent runs each commit once, in commit order, and the state stream steps through each commit",
+      "steps": [
+        { "do": "subscribe", "as": "s" },
+        { "do": "subscribeState", "as": "st" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e1" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e2" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e3" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e4" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e5" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e6" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e7" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e8" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e9" },
+        { "do": "execute", "uri": "command:/counter/increment", "params": { "by": 1 }, "ctx": "alice", "as": "e10" },
+        { "do": "await", "as": "e1" },
+        { "do": "await", "as": "e2" },
+        { "do": "await", "as": "e3" },
+        { "do": "await", "as": "e4" },
+        { "do": "await", "as": "e5" },
+        { "do": "await", "as": "e6" },
+        { "do": "await", "as": "e7" },
+        { "do": "await", "as": "e8" },
+        { "do": "await", "as": "e9" },
+        { "do": "await", "as": "e10" },
+        { "do": "flush" },
+        { "do": "expectRecords", "as": "s", "count": 10 },
+        { "do": "expectStates", "as": "st", "counts": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }
+      ]
+    }
+  ]
+}

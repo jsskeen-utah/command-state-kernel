@@ -1,0 +1,21 @@
+# Dependencies and build output
+node_modules/
+dist/
+bin/
+obj/
+*.tsbuildinfo
+coverage/
+TestResults/
+
+# Secrets. .env.schema (varlock) is safe to commit.
+.env
+.env.*
+!.env.schema
+
+# Editors and OS
+.vs/
+.vscode/
+.idea/
+*.user
+.DS_Store
+Thumbs.db
